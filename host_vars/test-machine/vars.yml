@@ -1,0 +1,198 @@
+---
+hostname: &hostname 'test-machine'
+ansible_host: &private_ip 10.xx.xx.x
+ansible_port: 22
+ansible_user: ubuntu
+ansible_become: yes
+
+fqdn: &fqdn 'test.ca'
+aliases: &aliases
+  - '*.test.ca'
+  - 'mytest.com'
+  - 'www.test.com'
+public_ip: &public_ip 35.xxx.xxx.xx
+
+
+
+#spider_block:
+#  ua_blacklist: "{{ hostvars['default']['spider_block']['ua_blacklist'] | difference(['Crawler']) | union( xxx_ua_blacklist ) }}"
+#  ip_blacklist: "{{ hostvars['default']['spider_block']['ip_blacklist']}}"
+
+
+# specific configurations:
+etc_hosts:
+- ip: *private_ip
+  fqdn: *fqdn
+  aliases: *aliases
+- ip: 10.xxx.1.xxx
+  fqdn: 'test-machine'
+
+users:
+- username: user2
+  passwordless_sudo: yes
+  groups:
+  - www-data
+  public_keys:
+    groups:
+    - infrastructure
+    users:
+    - user1
+- username: ubuntu
+  passwordless_sudo: yes
+  public_keys:
+    groups:
+    - infrastructure
+- username: beanstalk
+  passwordless_sudo: no
+  groups:
+  - www-data
+  public_keys:
+    users:
+    - beanstalk
+php:
+  version: '7.2.23'
+  imagick: no
+  fpm:
+    max_children: '200'
+    max_spare_servers: 40
+  ini:
+    max_execution_time: '300'
+    memory_limit: '1024M'
+    upload_max_filesize: '2M'
+    post_max_size: '8M'
+    max_input_vars: '30000'	
+  cli:
+    memory_limit: '2048M'
+  compile_options:
+  - '--enable-gd-native-ttf'
+  - '--with-freetype-dir=/usr/include/freetype2'
+varnish:
+  ip: *private_ip
+  fqdn: *fqdn
+  aliases: *aliases
+  varnish_version: 4
+  backend_port: 81
+  malloc: '3096m'
+  full_access_whitelist:
+  - '216.xx.xx.xx'
+  api_access_whitelist:
+  - *private_ip
+  #MS Dynamics
+  - xx.xx.xx.xx
+
+redis_instances:
+  session:
+    name: 'session'
+    bind:
+      address: 127.0.0.1
+      port: 6400
+    config:
+      max_memory: 256mb
+  cache:
+    name: 'cache'
+    bind:
+      address: 127.0.0.1
+      port: 6390
+    config:
+      max_memory: 512mb
+  full_page_cache:
+    name: 'full_page_cache'
+    bind:
+      address: 127.0.0.1
+      port: 6391
+    config:
+      max_memory: 10gb
+
+
+magento:
+  fqdn: *fqdn
+  repository: '$GITHUB_URL'
+  edition: 'enterprise'
+  adminURL: &admin_url '$user'
+  owner: www-data
+  web_user: www-data
+  group: www-data
+  install:
+    date: 'Fri, 02 Aug 2013 15:37:11 +0000'
+  crypt:
+    key: "{{ lookup('hashi_vault', 'secret=kv/data/test-machine token={{ vault_token }} url={{ vault_url }}')['crypt_key']}}"
+  db:
+    host: test-db
+    username: "{{ lookup('hashi_vault', 'secret=kv/data/test-machine token={{ vault_token }} url={{ vault_url }}')['db_user']}}"
+    password: "{{ lookup('hashi_vault', 'secret=kv/data/test-machine token={{ vault_token }} url={{ vault_url }}')['db_password']}}"
+    dbname: &mysql_database 'test-db-user'
+  redis:
+    session:
+      port: 6400
+    cache:
+      port: 6390
+    full_page_cache:
+      port: 6391
+cron:
+- name: "reindexall"
+  minute: "45"
+  hour: "7"
+  job: "php $MAGE_PATH/shell/indexer.php --reindexall &> $MAGE_PATH/var/log/cron_reindexall.log"
+
+- name: "cron always"
+  minute: "*"
+  hour: "*"
+  job: "php $MAGE_PATH/cron.php -m=always >> $MAGE_PATH/var/log/cron_always.log 2>&1"
+  disabled: true
+
+- name: "cron default"
+  minute: "*"
+  hour: "*"
+  job: "php $MAGE_PATH/cron.php -m=default >> $MAGE_PATH/var/log/cron_default.log 2>&1"
+
+
+
+apache_instances:
+
+- fqdn: 'test.ca'
+  aliases:
+  - '*.test.ca'
+  listen_address: *private_ip
+  environment: '{{ server_environment }}'
+  timeout: 300
+  maxkeepaliverequests: 5
+  keepalivetimeout: 1
+  type: 'magento'
+  remote_trusted_proxies:
+  - 10.0.0.0/8
+  admin:
+    url: *admin_url
+    whitelist: &admin_whitelist
+    - xx.xx.xx.xx
+
+  cert:
+    public: "{{ lookup('file', 'ssl/prod/test.ca/public.crt') }}"
+    private: "{{ lookup('hashi_vault', 'secret=kv/data/test-machine token={{ vault_token }} url={{ vault_url }}')['test.ca_private_key']}}"
+    chain: "{{ lookup('file', 'ssl/prod/test.ca/chain.crt') }}"
+
+ # environment_variables:
+ #   MAGE_RUN_TYPE: 'store'
+ #   MAGE_RUN_CODE: ''
+
+- fqdn: 'mytest.com'
+  aliases:
+  - 'www.test.com'
+  path: 'test.ca'
+  listen_address: *private_ip
+  environment: '{{ server_environment }}'
+  timeout: 300
+  maxkeepaliverequests: 5
+  keepalivetimeout: 1
+  type: 'magento'
+  remote_trusted_proxies:
+  - 10.0.0.0/8
+  admin:
+    url: *admin_url
+    whitelist: *admin_whitelist    
+ # environment_variables:
+ #   MAGE_RUN_TYPE: 'website'
+ #   MAGE_RUN_CODE: 'base'
+  cert:
+    public: "{{ lookup('file', 'ssl/prod/test.com/public.crt') }}"
+    private: "{{ lookup('hashi_vault', 'secret=kv/data/test-machine token={{ vault_token }} url={{ vault_url }}')['mytest.com_private_key']}}"
+    chain: "{{ lookup('file', 'ssl/prod/test.com/chain.crt') }}"
