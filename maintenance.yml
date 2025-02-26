@@ -1,0 +1,74 @@
+---
+- name: ssh keys
+  hosts: all
+  roles:
+  - dm2.user
+  tags:
+  - user
+
+- name: updates
+  hosts: all
+  become: yes
+  tasks:
+    - name: CentOS
+      block:
+        - name: install dependencies
+          yum:
+            name: yum-utils
+            state: present
+          tags:
+          - dependencies
+        - name: list all package updates
+          yum:
+            list: updates
+            update_cache: yes
+          register: yumupdates
+        - name: list updates
+          debug:
+            msg: "{{ yumupdates.results | map(attribute='name') | list }}"
+        - name: update all packages
+          yum:
+            name: '*'
+            state: latest
+        - name: check if reboot is required
+          shell: needs-restarting -r
+          failed_when: false
+          register: reboot_required
+          changed_when: false
+          check_mode: no
+        - name: reboot machine if required
+          reboot:
+            reboot_timeout: 300
+          when: "reboot_required.rc != 0"
+          ignore_errors: "{{ ansible_check_mode }}"
+      when: ansible_facts['distribution'] == 'CentOS' or ansible_facts['distribution'] == 'Amazon'
+    - name: ubuntu
+      block:
+        - name: install dependencies
+          apt:
+            name: aptitude
+            state: present
+          tags:
+          - dependencies
+        - name: update apt
+          apt:
+            update_cache: yes
+            cache_valid_time: 600
+        - name: upgrade apt
+          apt:
+            upgrade: safe
+            autoremove: yes
+#        - name: Autoremove unused packages
+#          command: apt-get -y autoremove
+#      #    args:
+#      #      warn: false
+#          register: autoremove_output
+#          changed_when: "'The following packages will be REMOVED' in autoremove_output.stdout"
+        - name: Reboot system if required
+          command: shutdown -r +1 'Rebooting to complete system upgrade'
+                   removes=/var/run/reboot-required
+        - name: Wait for system to become reachable again
+          wait_for_connection:
+              delay: 60
+              timeout: 600
+      when: ansible_facts['distribution'] == 'Ubuntu'
